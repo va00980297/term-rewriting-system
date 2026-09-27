@@ -4,6 +4,7 @@
 module Match where
 
 import Term (Sub, Term (Func, Var, funcArgs, funcArity, funcName))
+import Debug.Trace ( trace )
 
 ------------------------------------------------------------
 -- Matching
@@ -25,8 +26,8 @@ matchTerm
   Func {funcName = f, funcArity = n, funcArgs = args1}
   Func {funcName = g, funcArity = m, funcArgs = args2}
     | f == g && n == m = matchList args1 args2
-    | otherwise = []
-matchTerm _ _ = []
+    | otherwise = trace "match: incompatible terms" []
+matchTerm _ _ = trace "match: incompatible terms" []
 
 ------------------------------------------------------------
 -- Match argument lists of two function terms pairwise.
@@ -40,7 +41,6 @@ matchTerm _ _ = []
 -- Returns [] if any argument pair fails to match.
 ------------------------------------------------------------
 matchList :: [Term] -> [Term] -> Sub
-matchList [] [] = []
 matchList [] _ = []
 matchList _ [] = []
 matchList (x : xs) (y : ys) =

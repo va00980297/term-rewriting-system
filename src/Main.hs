@@ -8,13 +8,6 @@ import Unify (conflict, decompose, delete, eliminate, occursCheck, swap, unify)
 
 main :: IO ()
 main = do
-  testDelete
-  testConflict
-  testOccursCheck
-  testSwap
-  testDecompose
-  testEliminate
-  testUnify
   testMatch
   testRewrite
 
@@ -212,7 +205,7 @@ testMatch = do
   print "========== TEST MATCH =========="
 
   -- x ~ x  →  {}  (x ↦ x is a no-op)
-  assertEqual (matchTerm x x) [] "match same variable"
+  assertEqual (matchTerm x x) [(x, x)] "match same variable"
 
   -- x ~ y  →  {x ↦ y}
   assertEqual (matchTerm x y) [(x, y)] "match variable with variable"

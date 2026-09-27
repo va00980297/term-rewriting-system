@@ -50,6 +50,7 @@ type EqSet = [(Term, Term)]
 type Sub = [(Term, Term)]
 
 type Context = Term -> Term
+
 ------------------------------------------------------------
 -- Smart constructor for function terms.
 --
