@@ -16,7 +16,6 @@ import Data.List (intercalate)
 --
 --   Func { funcName = "a", funcArity = 0, funcArgs = [] }
 ------------------------------------------------------------
-
 data Term
   = Var String
   | Func
@@ -27,31 +26,6 @@ data Term
   deriving (Eq, Ord, Read)
 
 ------------------------------------------------------------
--- A set of equations to be unified.
---
--- Used in module Unify
---
--- Each pair represents an equation:
---
---   t1 ≐ t2
-------------------------------------------------------------
-
-type EqSet = [(Term, Term)]
-
-------------------------------------------------------------
--- A set of substitutions found.
---
--- Used in module Match
---
--- Each pair represents an Matching:
---
--- p matches t
-------------------------------------------------------------
-type Sub = [(Term, Term)]
-
-type Context = Term -> Term
-
-------------------------------------------------------------
 -- Smart constructor for function terms.
 --
 -- Ensures that the declared arity matches the number of
@@ -60,7 +34,6 @@ type Context = Term -> Term
 -- External modules should construct function terms using
 -- `mkFunc` instead of directly creating invalid Func values.
 ------------------------------------------------------------
-
 mkFunc :: String -> Int -> [Term] -> Term
 mkFunc name arity args
   | arity == length args =
@@ -90,10 +63,70 @@ mkFunc name arity args
 -- Constants (functions with no arguments) are printed as:
 --   a
 ------------------------------------------------------------
-
 instance Show Term where
   show (Var x) = x
   show (Func {funcName = name, funcArgs = args})
     | null args = name
     | otherwise =
         name ++ "(" ++ intercalate "," (map show args) ++ ")"
+
+------------------------------------------------------------
+-- UNIFY
+------------------------------------------------------------
+
+------------------------------------------------------------
+-- A set of equations to be unified.
+--
+-- Each pair (s, t) represents an equation:
+--
+--   s ≐ t
+------------------------------------------------------------
+type EqSet = [(Term, Term)]
+
+------------------------------------------------------------
+-- MATCH, REWRITE
+------------------------------------------------------------
+
+------------------------------------------------------------
+-- A substitution: a list of variable-to-term bindings.
+--
+-- Each pair (Var x, t) represents:
+--
+--   x ↦ t
+--
+-- Exception: results of matchTerm may also contain
+-- pseudo-bindings (c, c) for constants c. Since [] denotes
+-- match failure, (c, c) serves as a non-empty success
+-- marker. subTerm only replaces variables, so such pairs
+-- have no effect when the substitution is applied.
+------------------------------------------------------------
+type Sub = [(Term, Term)]
+
+------------------------------------------------------------
+-- A context: a term with a single hole.
+--
+-- Represented as a function Term -> Term.
+-- Applying a context C to a term t fills the hole:
+--
+--   C[t]
+------------------------------------------------------------
+type Context = Term -> Term
+
+------------------------------------------------------------
+-- A rewrite rule l -> r.
+--
+-- By convention, a well-formed rule satisfies:
+--   * l is not a variable
+--   * vars(r) ⊆ vars(l)
+--
+-- These conditions are NOT enforced. The test suite uses
+-- rules with a bare variable on the left (e.g. x -> b):
+-- such a rule matches every subterm, which is convenient
+-- for testing position enumeration in rewrite.
+------------------------------------------------------------
+type Rule = (Term, Term)
+
+------------------------------------------------------------
+-- A rewrite system: a set of rewrite rules.
+------------------------------------------------------------
+type RewriteSystem = [Rule]

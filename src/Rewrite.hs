@@ -3,30 +3,46 @@ module Rewrite where
 import Match (matchTerm, subTerm)
 import Term
   ( Context,
+    Rule,
+    RewriteSystem,
     Sub,
-    Term (Func, Var, funcArgs, funcArity, funcName),
+    Term (Func, Var),
+    funcArgs,
+    funcArity,
+    funcName,
   )
 
 ------------------------------------------------------------
--- Apply a rewrite rule l -> r to a term u.
+-- Apply a rewrite system (a list of rules) to a term u.
 --
--- For each subterm u' of u that matches l with substitution sigma,
--- returns C[r*sigma] where C[_] is the context of u' in u.
---
--- Returns [] if no subterm matches.
+-- Tries each rule in order and collects all one-step reducts.
+-- Returns [] if no rule applies anywhere in u.
 ------------------------------------------------------------
-rewrite :: Term -> (Term, Term) -> [Term]
+rewriteSystem :: Term -> RewriteSystem -> [Term]
+rewriteSystem u rest = foldr ((++) . rewrite u) [] rest
+
+------------------------------------------------------------
+-- Apply a single rewrite rule l -> r to a term u.
+--
+-- Enumerates all subterm positions of u (as context/subterm pairs),
+-- and for each position where l matches the subterm, returns the
+-- result of filling the context with r instantiated by the match.
+--
+-- Returns [] if no subterm of u matches l.
+------------------------------------------------------------
+rewrite :: Term -> Rule -> [Term]
 rewrite u (l, r) = tryContexts u (findContexts u) (l, r)
 
 ------------------------------------------------------------
--- Try applying a rewrite rule to each (context, subterm) pair.
+-- Try applying a rewrite rule at each (context, subterm) pair.
 --
--- For each (C[_], u'): attempt match(l, u').
---   Failure ([]): skip.
---   Success sigma: add C[r*sigma] to results.
+-- For each pair (C[_], u'):
+--   - Attempt match(l, u') to get substitution sigma.
+--   - Failure ([]): skip this position.
+--   - Success sigma: yield C[r * sigma] as a reduct.
 ------------------------------------------------------------
-tryContexts :: Term -> [(Context, Term)] -> (Term, Term) -> [Term]
-tryContexts u [] _ = []
+tryContexts :: Term -> [(Context, Term)] -> Rule -> [Term]
+tryContexts _ [] _ = []
 tryContexts u ((c, v) : rest) (l, r) =
   case matchTerm l v of
     [] -> tryContexts u rest (l, r)
@@ -36,27 +52,30 @@ tryContexts u ((c, v) : rest) (l, r) =
 -- Enumerate all (context, subterm) pairs of a term,
 -- in breadth-first order.
 --
--- For each pair (C[_], u'): C[u'] = u.
+-- Each pair (C[_], u') satisfies: C[u'] = u.
 --
--- Uses an iterative layer expansion:
---   Layer 0: (id, u)
---   Layer n+1: direct subterms of each term in layer n,
---              with contexts lifted to the top level.
+-- Layer 0 : (id, u)              — the whole term
+-- Layer n+1: direct children of each Func in layer n,
+--            with contexts composed to reach the top.
+--
+-- Variables / constants appear as leaves and are not expanded further.
 ------------------------------------------------------------
 findContexts :: Term -> [(Context, Term)]
 findContexts (Var x) = [(\hole -> hole, Var x)]
-findContexts func@(Func {funcArgs = args}) = 
+findContexts func@(Func {funcArgs = args}) =
   go [(\hole -> hole, func)]
-    where
-      go [] = []
-      go layer = layer ++ go (nextLayer layer)
+  where
+    -- Iteratively expand layers until no Func subterms remain.
+    go [] = []
+    go layer = layer ++ go (nextLayer layer)
 
 ------------------------------------------------------------
--- Expand one layer: given a list of (context, subterm) pairs,
--- produce the next layer by expanding each Func subterm
--- into its direct argument positions.
+-- Expand one BFS layer into the next.
 --
--- Variables and constants have no subterms and are skipped.
+-- For each (C[_], subterm) in the current layer:
+--   - Var / constant (arity 0): no children, skip.
+--   - Func: expand into its direct argument positions
+--           and lift those contexts through C.
 ------------------------------------------------------------
 nextLayer :: [(Context, Term)] -> [(Context, Term)]
 nextLayer [] = []
@@ -65,30 +84,28 @@ nextLayer ((c, func@(Func {funcArgs = args})) : rest) =
   liftContext c (contextsArgs func [] args) ++ nextLayer rest
 
 ------------------------------------------------------------
--- Enumerate direct-child (context, subterm) pairs of a
--- function term, using prev/rest to represent the hole position.
+-- Enumerate direct-child (context, subterm) pairs of a Func term.
 --
--- For argument t at position i:
---   C[_] = func { funcArgs = prev ++ [_] ++ rest }
+-- For each argument t at position i:
+--   C[_] = func { funcArgs = [a₀, …, aᵢ₋₁, _, aᵢ₊₁, …] }
 --
--- prev accumulates left siblings; rest is the remaining args.
+-- 'prev' accumulates left siblings already processed;
+-- 'rest' is the suffix of arguments yet to be visited.
 ------------------------------------------------------------
 contextsArgs :: Term -> [Term] -> [Term] -> [(Context, Term)]
-contextsArgs func _ [] = []
+contextsArgs _ _ [] = []
 contextsArgs func prev (t : rest) =
   (\hole -> func {funcArgs = prev ++ [hole] ++ rest}, t)
     : contextsArgs func (prev ++ [t]) rest
 
 ------------------------------------------------------------
--- Lift a list of (context, subterm) pairs through an outer context.
+-- Lift a list of (context, subterm) pairs through an outer context c.
 --
--- Given outer context c and child pairs (c', u'):
---   new context = \hole -> c (c' hole)
---
--- This composes the two contexts so the hole reaches
--- the correct position in the original term.
+-- Replaces each inner context c' with (\hole -> c (c' hole)),
+-- so the composed context places the hole at the correct position
+-- in the original top-level term.
 ------------------------------------------------------------
 liftContext :: Context -> [(Context, Term)] -> [(Context, Term)]
-liftContext c [] = []
+liftContext _ [] = []
 liftContext c ((c', t) : rest) =
   (\hole -> c (c' hole), t) : liftContext c rest

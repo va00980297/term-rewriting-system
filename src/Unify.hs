@@ -1,18 +1,25 @@
 module Unify where
 
-import Control.Applicative (Alternative (empty))
 import Term (EqSet, Term (Func, Var, funcArgs, funcArity, funcName))
 
 ------------------------------------------------------------
--- The algorithm repeatedly applies the following rules:
--- Swap -> Decompose -> Delete -> Eliminate
+-- Syntactic unification (Martelli & Montanari 1982).
+--
+-- Each round applies, in order:
+--
+--   check → Swap → Decompose → check → Delete → check → Eliminate
+--
+-- where check fails on Conflict or Occurs Check.
+-- Rounds repeat until the equation set no longer changes.
 --
 -- It stops when:
 --   * the equation set is fully simplified (success)
 --   * a conflict or occurs-check failure is detected (failure)
 --
 -- Returns:
---   Just EqSet  : unification succeeds
+--   Just EqSet  : unification succeeds; the result is in
+--                 solved form x₁ ≐ t₁, …, xₖ ≐ tₖ, read as
+--                 the unifier {x₁ ↦ t₁, …, xₖ ↦ tₖ}
 --   Nothing     : unification fails
 ------------------------------------------------------------
 unify :: EqSet -> Maybe EqSet
@@ -22,6 +29,9 @@ unify set = do
     then Just result
     else unify result
 
+------------------------------------------------------------
+-- One round of rule applications (see unify).
+------------------------------------------------------------
 applyRules :: EqSet -> Maybe EqSet
 applyRules set =
   check set
@@ -31,11 +41,18 @@ applyRules set =
     >>= check
     >>= (Just . eliminate)
 
+------------------------------------------------------------
+-- Fail if the equation set contains a conflict or
+-- violates the occurs check.
+------------------------------------------------------------
 check :: EqSet -> Maybe EqSet
 check set
   | conflict set || not (occursCheck set) = Nothing
   | otherwise = Just set
 
+------------------------------------------------------------
+-- Swap, then Decompose.
+------------------------------------------------------------
 simplify :: EqSet -> EqSet
 simplify set = decompose (swap set)
 
@@ -62,6 +79,9 @@ delete ((s, t) : xs)
 --
 -- Replace an equation between two function terms with equations
 -- between their corresponding arguments.
+--
+-- Equations involving constants are left unchanged; they are
+-- handled by Delete (a ≐ a) or Conflict (a ≐ b).
 ------------------------------------------------------------
 decompose :: EqSet -> EqSet
 decompose [] = []
@@ -98,7 +118,7 @@ conflict (_ : xs) = conflict xs
 ------------------------------------------------------------
 -- Rule: Swap
 --
--- t ≐ x
+-- t ≐ x   (t not a variable)
 --      ↓
 -- x ≐ t
 --
@@ -114,10 +134,14 @@ swap (eq : xs) =
 ------------------------------------------------------------
 -- Rule: Eliminate
 --
--- x ≐ t, where x ∉ vars(t)
+-- x ≐ t
 --
--- Generate the substitution {x ↦ t}, apply it to the remaining
--- equations, and keep the binding in the result.
+-- Generate the substitution {x ↦ t}, apply it to all other
+-- equations (both already processed and remaining), and keep
+-- the binding x ≐ t in the result.
+--
+-- The condition x ∉ vars(t) is ensured by the occurs check
+-- that runs before Eliminate in each round.
 ------------------------------------------------------------
 eliminate :: EqSet -> EqSet
 eliminate set = go set []
@@ -127,14 +151,14 @@ eliminate set = go set []
       go (substitute xs (Var x) t) (substitute processed (Var x) t ++ [(Var x, t)])
     go (eq : xs) processed = go xs (processed ++ [eq])
 
-
-
 ------------------------------------------------------------
 -- Rule: Occurs Check
 --
--- x ≐ t
+-- x ≐ t   (t not a variable)
 --
 -- Fail if x occurs anywhere inside t.
+--
+-- Returns True if the check passes (no occurrence found).
 ------------------------------------------------------------
 occursCheck :: EqSet -> Bool
 occursCheck [] = True
@@ -151,31 +175,34 @@ notOccursIn _ [] = True
 notOccursIn (Var x) (Var y : ys)
   | x /= y = notOccursIn (Var x) ys
   | otherwise = False
-notOccursIn (Var x) (func@(Func {funcArgs = args}) : ys)
+notOccursIn (Var x) (Func {funcArgs = args} : ys)
   | notOccursIn (Var x) args = notOccursIn (Var x) ys
   | otherwise = False
 
-
 ------------------------------------------------------------
--- Apply a substitution to every equation in the equation set.
+-- Apply a single binding {x ↦ t} to every equation in the
+-- equation set.
 ------------------------------------------------------------
 substitute :: EqSet -> Term -> Term -> EqSet
 substitute [] _ _ = []
 substitute ((lhs, rhs) : xs) (Var x) t =
-  (subTerm lhs (Var x) t, subTerm rhs (Var x) t)
+  (replaceVar lhs (Var x) t, replaceVar rhs (Var x) t)
     : substitute xs (Var x) t
 
 ------------------------------------------------------------
--- Apply a substitution recursively to a term.
+-- Apply a single binding {x ↦ t} to a term, recursively.
 --
--- If the variable does not match, it remains unchanged.
+-- replaceVar s x t  =  s{x ↦ t}
+--
+-- Not to be confused with Match.subTerm, which applies a
+-- whole substitution (a list of bindings).
 ------------------------------------------------------------
-subTerm :: Term -> Term -> Term -> Term
-subTerm (Var v) (Var x) t
+replaceVar :: Term -> Term -> Term -> Term
+replaceVar (Var v) (Var x) t
   | v == x = t
   | otherwise = Var v
-subTerm func@(Func {funcArgs = args}) (Var x) t =
+replaceVar func@(Func {funcArgs = args}) (Var x) t =
   func
     { funcArgs =
-        map (\s -> subTerm s (Var x) t) args
+        map (\s -> replaceVar s (Var x) t) args
     }

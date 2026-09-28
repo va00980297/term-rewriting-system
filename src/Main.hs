@@ -1,15 +1,22 @@
 module Main where
 
-import Data.Maybe (isNothing)
 import Match (matchTerm)
-import Rewrite (rewrite)
+import Rewrite (rewrite, rewriteSystem)
 import Term (Term (Var), mkFunc)
 import Unify (conflict, decompose, delete, eliminate, occursCheck, swap, unify)
 
 main :: IO ()
 main = do
+  testDelete
+  testConflict
+  testOccursCheck
+  testSwap
+  testDecompose
+  testEliminate
+  testUnify
   testMatch
   testRewrite
+  testRewriteSystem
 
 ---------------------------------------------------------
 -- assert
@@ -84,7 +91,7 @@ testConflict = do
 ---------------------------------------------------------
 testOccursCheck :: IO ()
 testOccursCheck = do
-  print "========== TEST occursCheck=========="
+  print "========== TEST OCCURS CHECK =========="
   assertEqual (occursCheck [(x, a)]) True "valid check"
   assertEqual (occursCheck [(x, mkFunc "f" 1 [x])]) False "occurs check"
 
@@ -123,8 +130,8 @@ testEliminate = do
     [(x, a), (a, mkFunc "f" 1 [y]), (y, y)]
     "elimination"
   assertEqual
-    (eliminate [(mkFunc "f" 2 [a, x], b), (x, y), (a, Var "z")])
-    [(mkFunc "f" 2 [a, y], b), (x, y), (a, Var "z")]
+    (eliminate [(mkFunc "f" 2 [a, x], b), (x, y), (a, z)])
+    [(mkFunc "f" 2 [a, y], b), (x, y), (a, z)]
     "elimination"
 
 ---------------------------------------------------------
@@ -198,13 +205,16 @@ testUnify = do
 --
 -- match l u = sigma  such that  l*sigma = u
 -- Only variables in the pattern l are substituted.
+-- Variables in the target u are treated as constants.
 -- Failure returns [].
+-- A match binding no variable returns pseudo-bindings
+-- (c, c) for constants c as a success marker.
 ---------------------------------------------------------
 testMatch :: IO ()
 testMatch = do
   print "========== TEST MATCH =========="
 
-  -- x ~ x  →  {}  (x ↦ x is a no-op)
+  -- x ~ x  →  {x ↦ x}
   assertEqual (matchTerm x x) [(x, x)] "match same variable"
 
   -- x ~ y  →  {x ↦ y}
@@ -216,8 +226,8 @@ testMatch = do
   -- x ~ f(a)  →  {x ↦ f(a)}
   assertEqual (matchTerm x f1) [(x, f1)] "match variable with function"
 
-  -- a ~ a  →  {}
-  assertEqual (matchTerm a a) [] "match same constant"
+  -- a ~ a  →  {}  (returned as pseudo-binding [(a, a)])
+  assertEqual (matchTerm a a) [(a, a)] "match same constant"
 
   -- a ~ b  →  []  (failure: constants differ)
   assertEqual (matchTerm a b) [] "match different constants"
@@ -236,9 +246,10 @@ testMatch = do
 
   -- f(x, g(y)) ~ f(a, g(b))  →  {x ↦ a, y ↦ b}
   assertEqual
-    (matchTerm
-      (mkFunc "f" 2 [x, mkFunc "g" 1 [y]])
-      (mkFunc "f" 2 [a, mkFunc "g" 1 [b]]))
+    ( matchTerm
+        (mkFunc "f" 2 [x, mkFunc "g" 1 [y]])
+        (mkFunc "f" 2 [a, mkFunc "g" 1 [b]])
+    )
     [(x, a), (y, b)]
     "match nested functions"
 
@@ -275,11 +286,29 @@ testMatch = do
     [(x, a), (y, a)]
     "two variables map to same target"
 
-  -- f(a) ~ f(a)  →  {}  (ground pattern, no variables)
-  assertEqual (matchTerm f1 f1) [] "match ground terms"
+  -- f(a) ~ f(a)  →  {}  (ground pattern, returned as pseudo-binding [(a, a)])
+  assertEqual (matchTerm f1 f1) [(a, a)] "match ground terms"
 
   -- f(a) ~ f(b)  →  []  (failure: ground terms differ)
   assertEqual (matchTerm f1 (mkFunc "f" 1 [b])) [] "match ground terms, different target"
+
+  -- f(x, y) ~ f(y, x)  →  {x ↦ y, y ↦ x}  (target variables are constants)
+  assertEqual
+    (matchTerm (mkFunc "f" 2 [x, y]) (mkFunc "f" 2 [y, x]))
+    [(x, y), (y, x)]
+    "target variables are constants"
+
+  -- f(x, x) ~ f(y, b)  →  []  (failure: x cannot map to both y and b)
+  assertEqual
+    (matchTerm (mkFunc "f" 2 [x, x]) (mkFunc "f" 2 [y, b]))
+    []
+    "repeated variable vs target variable"
+
+  -- f(x, x) ~ f(a, x)  →  []  (failure: x cannot map to both a and x)
+  assertEqual
+    (matchTerm (mkFunc "f" 2 [x, x]) (mkFunc "f" 2 [a, x]))
+    []
+    "x ↦ x is not dropped"
 
 ---------------------------------------------------------
 -- REWRITE
@@ -289,6 +318,11 @@ testMatch = do
 --
 -- For each subterm u' matching l with substitution sigma,
 -- the result is C[r*sigma] where C[_] is the context of u'.
+-- Results are ordered breadth-first (outermost first).
+--
+-- Rules with a bare variable on the left (e.g. x -> b) are
+-- not well-formed by convention, but are used here because
+-- they match every position.
 ---------------------------------------------------------
 testRewrite :: IO ()
 testRewrite = do
@@ -340,10 +374,119 @@ testRewrite = do
   -- root: sigma={x↦f(a)}, result=g(f(a))
   -- inner f(a): sigma={x↦a}, result=f(g(a))
   assertEqual
-    (rewrite
-      (mkFunc "f" 1 [mkFunc "f" 1 [a]])
-      (mkFunc "f" 1 [x], mkFunc "g" 1 [x]))
-    [ mkFunc "g" 1 [mkFunc "f" 1 [a]]
-    , mkFunc "f" 1 [mkFunc "g" 1 [a]]
+    ( rewrite
+        (mkFunc "f" 1 [mkFunc "f" 1 [a]])
+        (mkFunc "f" 1 [x], mkFunc "g" 1 [x])
+    )
+    [ mkFunc "g" 1 [mkFunc "f" 1 [a]],
+      mkFunc "f" 1 [mkFunc "g" 1 [a]]
     ]
     "rewrite nested: rule matches at multiple depths"
+
+  -- f(y, x) rewritten by f(x, y) -> g(y, x)
+  -- root: sigma={x↦y, y↦x}, result=g(x, y)
+  -- term variables share names with rule variables
+  assertEqual
+    (rewrite (mkFunc "f" 2 [y, x]) (mkFunc "f" 2 [x, y], mkFunc "g" 2 [y, x]))
+    [mkFunc "g" 2 [x, y]]
+    "rewrite with shared variable names"
+
+  ---------------------------------------------------------
+-- REWRITE SYSTEM
+--
+-- rewriteSystem u rs returns all one-step reducts of u
+-- under any rule in rs.
+--
+-- Results are grouped by rule (in the order of rs), and
+-- within each rule ordered by position (breadth-first).
+-- Duplicates are not removed.
+---------------------------------------------------------
+testRewriteSystem :: IO ()
+testRewriteSystem = do
+  print "========== TEST REWRITE SYSTEM =========="
+
+  -- empty system: no rule, no reduct
+  assertEqual
+    (rewriteSystem f1 [])
+    []
+    "empty rewrite system"
+
+  -- single rule: same as rewrite
+  assertEqual
+    (rewriteSystem f1 [(mkFunc "f" 1 [x], mkFunc "g" 1 [x])])
+    (rewrite f1 (mkFunc "f" 1 [x], mkFunc "g" 1 [x]))
+    "single rule equals rewrite"
+
+  -- f(a) under {g(x) -> b, h(x) -> b}
+  -- no rule matches anywhere
+  assertEqual
+    (rewriteSystem f1 [(mkFunc "g" 1 [x], b), (mkFunc "h" 1 [x], b)])
+    []
+    "no rule applies"
+
+  -- f(a) under {f(x) -> g(x), f(x) -> h(x)}
+  -- both rules match at root
+  assertEqual
+    (rewriteSystem f1 [(mkFunc "f" 1 [x], mkFunc "g" 1 [x]), (mkFunc "f" 1 [x], mkFunc "h" 1 [x])])
+    [mkFunc "g" 1 [a], mkFunc "h" 1 [a]]
+    "two rules apply at the same position"
+
+  -- f(a) under {a -> b, f(x) -> g(x)}
+  -- rule 1 at inner a: f(b); rule 2 at root: g(a)
+  -- results follow rule order, not position order
+  assertEqual
+    (rewriteSystem f1 [(a, b), (mkFunc "f" 1 [x], mkFunc "g" 1 [x])])
+    [mkFunc "f" 1 [b], mkFunc "g" 1 [a]]
+    "results grouped by rule order"
+
+  -- same rules, reversed order
+  assertEqual
+    (rewriteSystem f1 [(mkFunc "f" 1 [x], mkFunc "g" 1 [x]), (a, b)])
+    [mkFunc "g" 1 [a], mkFunc "f" 1 [b]]
+    "reversing rules reverses groups"
+
+  -- f(a, a) under {a -> b}
+  -- one rule, two positions
+  assertEqual
+    (rewriteSystem (mkFunc "f" 2 [a, a]) [(a, b)])
+    [mkFunc "f" 2 [b, a], mkFunc "f" 2 [a, b]]
+    "one rule at several positions"
+
+  -- f(a) under {f(x) -> g(x), f(a) -> g(a)}
+  -- both rules produce g(a); duplicates are kept
+  assertEqual
+    (rewriteSystem f1 [(mkFunc "f" 1 [x], mkFunc "g" 1 [x]), (f1, mkFunc "g" 1 [a])])
+    [mkFunc "g" 1 [a], mkFunc "g" 1 [a]]
+    "duplicate reducts are kept"
+
+  -- Peano addition:
+  --   plus(0, y)    -> y
+  --   plus(s(x), y) -> s(plus(x, y))
+  --
+  -- 1 + 1:
+  --   plus(s(0), s(0))
+  --   → s(plus(0, s(0)))     (rule 2 at root)
+  --   → s(s(0))              (rule 1 at position 1)
+  assertEqual
+    (rewriteSystem (plus (suc zero) (suc zero)) peano)
+    [suc (plus zero (suc zero))]
+    "peano: 1 + 1, step 1"
+
+  assertEqual
+    (rewriteSystem (suc (plus zero (suc zero))) peano)
+    [suc (suc zero)]
+    "peano: 1 + 1, step 2"
+
+  -- s(s(0)) is a normal form: no rule applies
+  assertEqual
+    (rewriteSystem (suc (suc zero)) peano)
+    []
+    "peano: normal form"
+  where
+    zero = mkFunc "0" 0 []
+    suc t = mkFunc "s" 1 [t]
+    plus t u = mkFunc "plus" 2 [t, u]
+    peano =
+      [ (plus zero y, y),
+        (plus (suc x) y, suc (plus x y))
+      ]
